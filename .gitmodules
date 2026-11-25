@@ -1,0 +1,11 @@
+[submodule "opensbi"]
+	path = opensbi
+	url = https://github.com/spacemit-com/opensbi/
+	branch = k3-br-v1.0.y
+[submodule "u-boot"]
+	path = u-boot
+	url = https://github.com/spacemit-com/uboot-2022.10/
+	branch = k3-br-v1.0.y
+[submodule "linux"]
+	path = linux
+	url = https://github.com/torvalds/linux/

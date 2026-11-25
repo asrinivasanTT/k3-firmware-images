@@ -1,0 +1,104 @@
+name: Build K3 firmware
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install toolchain and dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-linux-gnu lzop device-tree-compiler u-boot-tools libssl-dev flex bison
+
+      - name: Assemble NOR image
+        run: make nor
+
+      - name: Assemble SD image
+        run: make sd
+
+      - name: Build Linux kernel
+        run: make linux
+
+      - name: Assemble UFS image
+        run: make ufs
+
+      - name: Verify NOR layout
+        run: |
+          # Check FIT magic at the firmware offsets
+          test "$(dd if=output/nor.img bs=1 skip=$((0x1b0000)) count=4 2>/dev/null | xxd -p)" = "d00dfeed"
+          test "$(dd if=output/nor.img bs=1 skip=$((0x210000)) count=4 2>/dev/null | xxd -p)" = "d00dfeed"
+          test "$(stat -c %s output/nor.img)" = "8388608"
+
+      - name: Verify SD layout
+        run: |
+          # GPT header "EFI PART" at byte 512 (512-byte sectors)
+          test "$(dd if=output/sd.img bs=1 skip=512 count=8 2>/dev/null)" = "EFI PART"
+          # Check FIT magic at the firmware offsets
+          test "$(dd if=output/sd.img bs=1 skip=$((0x700000)) count=4 2>/dev/null | xxd -p)" = "d00dfeed"
+          test "$(dd if=output/sd.img bs=1 skip=$((0x800000)) count=4 2>/dev/null | xxd -p)" = "d00dfeed"
+          test "$(stat -c %s output/sd.img)" = "33554432"
+
+      - name: Verify UFS layout
+        run: |
+          # GPT header at LBA 1 (byte 4096)
+          test "$(dd if=output/ufs.img bs=1 skip=4096 count=8 2>/dev/null)" = "EFI PART"
+          # ext4 magic (0xEF53, stored little-endian => bytes 53 ef) at the
+          # partition start: LBA 2048 * 4096 + superblock offset 1024 + magic offset 56
+          EXT4_MAGIC=$(dd if=output/ufs.img bs=1 skip=$((2048 * 4096 + 1024 + 56)) count=2 2>/dev/null | xxd -p)
+          test "$EXT4_MAGIC" = "53ef"
+          # hello.txt must be in the filesystem. debugfs cannot read a
+          # partitioned image at an offset, so extract the partition first.
+          dd if=output/ufs.img of=/tmp/ufs-part.img bs=4096 skip=2048 2>/dev/null
+          debugfs -R "cat /hello.txt" /tmp/ufs-part.img 2>/dev/null | grep -q "Hello World"
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: k3-firmware
+          path: |
+            output/nor.img
+            output/fw_dynamic.itb
+            output/u-boot.itb
+            output/FSBL.bin
+            output/bootinfo_block.bin
+            output/bootinfo_spinor.bin
+            output/Image
+            output/k3-pico-itx.dtb
+            output/sd.img
+            output/ufs.img
+          retention-days: 90
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: k3-firmware
+
+      - name: Upload release assets
+        run: |
+          # The release is created via the GitHub UI (which also pushes the
+          # tag that triggers this workflow), so it already exists here; just
+          # upload the build artifacts to it, clobbering any existing ones.
+          gh release upload "${GITHUB_REF#refs/tags/}" --clobber \
+            --repo "${GITHUB_REPOSITORY}" \
+            nor.img sd.img fw_dynamic.itb u-boot.itb FSBL.bin \
+            bootinfo_block.bin bootinfo_spinor.bin Image k3-pico-itx.dtb ufs.img
+        env:
+          GH_TOKEN: ${{ github.token }}

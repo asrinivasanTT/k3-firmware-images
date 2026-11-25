@@ -1,0 +1,17 @@
+# Build outputs
+output/
+opensbi/build/
+u-boot/*.bin
+u-boot/*.itb
+u-boot/u-boot
+u-boot/.config
+
+# Build artifacts
+*.o
+*.a
+*.pyc
+
+# Editor / OS
+*.swp
+*~
+.DS_Store
